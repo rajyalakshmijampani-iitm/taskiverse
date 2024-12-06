@@ -6,7 +6,8 @@
 #     "seaborn",
 #     "matplotlib",
 #     "scipy",
-#     "scikit-learn"
+#     "scikit-learn",
+#     "requests"
 # ]
 # ///
 
@@ -17,19 +18,71 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from scipy import stats
-from sklearn.preprocessing import StandardScaler
-from itertools import combinations
+import requests
 
-def read_csv(file_path):
-    """Read the CSV file and return the DataFrame."""
-    try:
-        df = pd.read_csv(file_path)
-        return df
-    except Exception as e:
-        print(f"Error reading CSV: {e}")
-        sys.exit(1)
+# ----------------------------Global variables-----------------------------------------------------
+
+AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")                                # Read the token from environment
+url = "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"      # API Endpoint
+headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {AIPROXY_TOKEN}"
+          }
+model = "gpt-4o-mini"
+tools = []
+
+#-----------------------------------------------------------------------------------------------------
+
+def get_metadata(data):
+    # Expected output format
+    # {
+    #     "columns": [{"name":"col1","type":"string"},
+    #                 {"name":"col2","type":"integer"},
+    #                  ...
+    #                ]
+    # }
+
+    global tools
+    tools.append({"type": "function",
+                  "function": {"name": "extract_metadata",
+                               "description": "From the provided CSV data, extract the column names and their corresponding data types.",
+                               "parameters":{"type":"object",
+                                             "properties": {"columns": {"type": "array",
+                                                                       "items":{"type": "object",
+                                                                                "description": "Details of column",
+                                                                                "properties": {"name": {"type": "string",
+                                                                                                        "description": "Name of the column"
+                                                                                                        },
+                                                                                                "type": {"type": "string",
+                                                                                                        "description": "Datatype of the column (e.g. integer, string)"
+                                                                                                        }
+                                                                                            },
+                                                                                "required": ["name", "type"]
+                                                                                }   
+                                                                     }
+                                                            },
+                                             "required":["columns"]
+                                            }
+                            }
+                })
+    
+    prompt = '''Given the provided CSV data, extract the column names and infer their corresponding data types.
+                The data types should be one of the following: string, float, integer, boolean, or datetime.
+                Inference should be based not only on the data but also on the column names, as some columns may contain unclean or irrelevant data.
+                For numerical columns, treat values in scientific notation (e.g., 9.78E+12) as integers.
+                If a column contains all null values, classify its data type as null.
+                The goal is to provide the most appropriate data type for each column based on its name and the overall content.'''
+    
+    json_data = {"model": model,
+                 "tools": tools,
+                 "tool_choice": {"type": "function","function": {"name": "extract_metadata"}},
+                 "messages":[{"role": "system", "content": prompt},
+                             {"role": "user", "content": data}
+                            ]
+                }
+    response = requests.post(url, headers=headers, json=json_data)
+    result = response.json()
+    return json.loads(result["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
 
 def clean_data(df):
     """Basic data cleaning: delete duplicate rows and empty rows"""
@@ -192,33 +245,55 @@ def perform_generic_analysis(df):
     perform_clustering(df)
 
 def main():
-    """Main function to process the input CSV and generate visualizations."""
+
+    # Validate command line argument count
     if len(sys.argv) != 2:
-        print("Usage: uv run autolysis.py <filename.csv>")
+        print("Usage: uv run autolysis.py <input_filename.csv>")
         sys.exit(1)
 
-    file_path = sys.argv[1]
-    if not os.path.exists(file_path):
-        print("File not found.")
+    # Check file existence in current working directory
+    file = sys.argv[1]
+    if not os.path.exists(file):
+        print("File not found in the current working directory.")
         sys.exit(1)
 
-    # Extract file name and create a folder with that name
-    file_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_folder = create_output_folder(file_name)
+    # Create a folder with file base name to store results
+    file_base_name = os.path.splitext(os.path.basename(file))[0]
+    output_folder = create_output_folder(file_base_name)
 
-    # Read and clean the dataset
-    df = read_csv(file_path)
-    df = clean_data(df)
-    print(f"Dataset loaded and cleaned successfully.")
+    # Load a sample of 10 lines (or all lines if the file has fewer than 10 lines) from the file
+    try:
+        with open(file=file, mode='r', encoding='utf-8') as f:
+            line_count = int(sum(1 for _ in f))
+            if line_count == 0:
+                raise ValueError(f"The file '{file}' is empty.")
+            f.seek(0)
+            data = ''.join([f.readline() for _ in range(min(10,line_count))])
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except:
+        print(f"Error: There was an issue reading the file '{file}'.")
+        sys.exit(1)
+
+    # Send the sample data to LLM and get metadata
+    get_metadata(data)
+
+
+
+    # # Read and clean the dataset
+    # df = read_csv(file_path)
+    # df = clean_data(df)
+    # print(f"Dataset loaded and cleaned successfully.")
     
-    # Generate data context
-    context = generate_data_context(file_name, df) 
+    # # Generate data context
+    # context = generate_data_context(file_name, df) 
 
-    # Save data context
-    with open(f'{output_folder}/data_context.json', 'w') as context_file:
-        json.dump(context, context_file, indent=4)
+    # # Save data context
+    # with open(f'{output_folder}/data_context.json', 'w') as context_file:
+    #     json.dump(context, context_file, indent=4)
 
-    print(f"Data context saved to '{output_folder}/data_context.json'")
+    # print(f"Data context saved to '{output_folder}/data_context.json'")
 
 if __name__ == "__main__":
-    main()
+     main()
