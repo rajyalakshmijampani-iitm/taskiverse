@@ -4,7 +4,8 @@
 #     "pandas",
 #     "matplotlib",
 #     "seaborn",
-#     "requests"
+#     "requests",
+#     "Pillow"
 # ]
 # ///
 
@@ -14,9 +15,15 @@ import json
 import pandas as pd
 import requests
 import matplotlib
-import seaborn
+import seaborn as sns
+import matplotlib.pyplot as plt
+from PIL import Image
+import warnings
 
-# ----------------------------Global variables-----------------------------------------------------
+# Suppress warnings globally
+warnings.filterwarnings("ignore")
+
+#Global variables
 
 AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")                                # Read the token from environment
 url = "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"      # API Endpoint
@@ -26,8 +33,8 @@ headers = {
           }
 model = "gpt-4o-mini"
 all_functions = {}
-
-#-----------------------------------------------------------------------------------------------------
+df = None
+output_folder=None
 
 def get_metadata(data):
     # Expected output format
@@ -64,8 +71,6 @@ def get_metadata(data):
                 From the provided CSV data, extract the column names and infer their corresponding data types.
                 The data types should be one of the following: string, float, integer, boolean, or datetime.
                 Inference should be based not only on the data but also on the column names, as some columns may contain unclean or irrelevant data.
-                For numerical columns, treat values in scientific notation (e.g., 9.78E+12) as integers.
-                If a column contains all null values, classify its data type as null.
                 The goal is to provide the most appropriate data type for each column based on its name and the overall content.'''
     
     json_data = {"model": model,
@@ -79,30 +84,88 @@ def get_metadata(data):
     result = response.json()
     return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
 
-def clean_and_analyze_data(df):
+def summarize_data(df):
+    # Basic data cleaning: delete duplicate rows, empty rows
     summary={}
-    #Basic data cleaning: delete duplicate rows, empty rows
+    
     df = df.drop_duplicates()
     df = df.dropna(how='all')
 
-    #Numeric data summary
+    # Numeric data summary
     numeric_summary = df.describe().transpose() 
-    numeric_missing = df.isnull().mean() * 100  # Find Missing percentage
+    numeric_missing = df.isnull().mean() * 100
     numeric_summary['missing%'] = numeric_missing[numeric_summary.index]
 
-    #Categorical data summary
+    # Categorical data summary
     categorical_summary = df.describe(include='object').transpose()
-    categorical_missing = df.isnull().mean() * 100  # Find Missing percentage
+    categorical_missing = df.isnull().mean() * 100
     categorical_summary['missing%'] = categorical_missing[categorical_summary.index]
 
     summary['numeric'] = numeric_summary
     summary['categorical'] = categorical_summary
     return summary
 
+def get_code_for_cleaning(metadata,summary):
+    global all_functions
+    all_functions['code_for_cleaning']  = [{"name": "code_for_cleaning",
+                                            "description": "From the given metadata and summary statistics, generate Python code to clean the dataset.",
+                                            "parameters":{"type":"object",
+                                                          "properties": {"code": {"type": "string",
+                                                                                "description": "Python code to clean the dataset."
+                                                                                }
+                                                                        },
+                                                        "required": ["code"]
+                                                    }
+                                            }]
+                                                                            
+    prompt = f'''Given the following metadata and summary statistics, provide Python code to clean the dataset.
+                The dataframe is stored in a variable named `df`. The cleaned data should also remain in the variable `df`.
+                Use only pandas library.
+                Do not include any escape sequences for newline character or quotes.
+                Do not include comments.
+                Metadata:\n{metadata}\nSummary Statistics:\n{summary}'''
+    
+    json_data = {"model": model,
+                "functions": all_functions['code_for_cleaning'],
+                "function_call": {"name": "code_for_cleaning"},
+                "messages":[{"role": "user", "content": prompt}]
+                }
+    response = requests.post(url, headers=headers, json=json_data)
+    result = response.json()
+    return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
+
+def re_request_code(prev_code,error):
+    global all_functions
+    all_functions['re_request_code']  = [{"name": "re_request_code",
+                                        "description": "Given the code and error message, provide a new code to avoid the error.",
+                                        "parameters":{"type":"object",
+                                                        "properties": {"code": {"type": "string",
+                                                                                "description": "Updated code to avoid the given error."
+                                                                                }
+                                                                    },
+                                                        "required": ["code"]
+                                                    }
+                                            }]
+                                                                            
+    prompt = f'''The following code caused an error. Please analyze the issue and provide a corrected version of the code.
+                    Use only pandas library.
+                    Do not include any escape sequences for newline character or quotes.
+                    Do not include comments.
+                \n\Code:\n{prev_code}\n\nError:\n{error}'''
+    
+    json_data = {"model": model,
+                "functions": all_functions['re_request_code'],
+                "function_call": {"name": "re_request_code"},
+                "messages":[{"role": "user", "content": prompt}]
+                }
+    response = requests.post(url, headers=headers, json=json_data)
+    result = response.json()
+    return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
+
 def get_visuals(metadata, summary):
     global all_functions
     all_functions['get_visuals']  = [{"name": "get_visuals",
-                                      "description": "From the given metadata and summary statistics of a CSV dataset, generate three best visualizations. The function decides on the best visualizations (such as histograms, bar charts, box plots, scatter plots, or combinations of multiple columns) for the given data, and generates the corresponding Python code to create those visualizations using matplotlib and seaborn. The function outputs a dictionary with the details of each figure, including the file name to save the figure and the code to generate it.",
+                                      "description": "From the given metadata and summary statistics of a CSV dataset, generate code for three best visualizations.",
                                        "parameters":{"type":"object",
                                                      "properties": {"fig1": {"type": "object",
                                                                               "description": "Details of Figure 1, including the file name and the Python code to generate it.",
@@ -140,13 +203,14 @@ def get_visuals(metadata, summary):
                                                                     },
                                                       "required":["fig1","fig2","fig3"]
                                                     }
-                                        }]
+                                    }]
     prompt = f'''Given the following metadata and summary statistics of the CSV data, analyze the columns and identify three best visualizations for exploration.
-                For each visualization, recommend the most appropriate graph based on the columns' data types and relationships.
-                If necessary, generate combined visualizations that explore the relationships between multiple columns.
-                Provide the corresponding file name to store the figure and Python code using `matplotlib` and `seaborn` libraries only to generate the suggested visualizations. 
+                Provide file name to store the figure and the Python code.
+                Use only `matplotlib` and `seaborn` libraries. 
+                The folder name is in `output_folder` variable. Use os.path.join(output_folder, filename) to save.
                 The dataframe is stored in a variable named `df`.
-                Ensure that the code is error-free, ready to execute, and does not include any escape sequences or comments.
+                Do not include any escape sequences for newline character or quotes.
+                Do not include comments.
                 \n\nMetadata:\n{metadata}\n\nSummary Statistics:\n{summary}'''
     
     json_data = {"model": model,
@@ -158,16 +222,100 @@ def get_visuals(metadata, summary):
     result = response.json()
     return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
 
+def generate_readme(summary, visualizations):
+    global all_functions
+    all_functions['generate_readme']  = [{"name": "generate_readme",
+                                      "description": "From the given summary and the visualizations generated, Write a story describing the dataset, analysis, insights, and implications.",
+                                       "parameters":{"type":"object",
+                                                     "properties": {"text": {"type": "string",
+                                                                              "description": "Analysis of the dataset."
+                                                                            },
+                                                      
+                                                      },
+                                                      "required":["text"]
+                                                    }
+                                        }]
+    prompt = f'''Given the dataset summary: {summary} and visualizations: {visualizations}, 
+                write a README.md containing dataset's purpose, key findings, insights, and recommendations. 
+                Integrate the visualizations at relevant points using placeholders.
+                Ensure that they align with the insights. Explain how each visualization supports the narrative.'''
+    
+    json_data = {"model": model,
+                "functions": all_functions['generate_readme'],
+                "function_call": {"name": "generate_readme"},
+                "messages":[{"role": "user", "content": prompt}]
+                }
+    response = requests.post(url, headers=headers, json=json_data)
+    result = response.json()
+    print(result)
+    return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
 
 def create_output_folder(folder_name):
-    """Create an output folder for the given dataset name."""
+    # Create an output folder for the given dataset name.
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
     return folder_name
 
+def execute_code(code):
+    try:
+        exec(code)
+        execution_status = 'Success'
+    except Exception as e:
+        error_message = str(e)
+        print(error_message)
+        execution_status = 'Failure'
+
+    # Re-request code
+    if execution_status == 'Failure':
+        try:
+            updated_code = re_request_code(code,error_message)['code']
+            exec(updated_code)
+            execution_status = 'Success'
+        except Exception as e:
+            error_message = str(e)
+            print(error_message)
+            print('Invalid code received from the LLM. The process was halted after 2 unsuccessful attempts.')
+            execution_status = 'Failure'
+    
+    return execution_status
+
+def create_graphs(df):
+    global output_folder
+    # Creates graphs for the first numerical and categorical columns of a DataFrame.
+
+    # Find the first numerical column
+    numerical_cols = df.select_dtypes(include=['number']).columns
+    if len(numerical_cols) > 0:
+        num_col = numerical_cols[0]
+        plt.figure(figsize=(8, 6))
+        df[num_col].dropna().hist(bins=30, color='skyblue', edgecolor='black')
+        plt.title(f'Distribution of {num_col}')
+        plt.xlabel(num_col)
+        plt.ylabel('Frequency')
+        plt.tight_layout()
+        plt.savefig(f"{output_folder}/{num_col}_distribution.png")
+        plt.close()
+    else:
+        print("No numerical columns found in the DataFrame.")
+
+    # Find the first categorical column
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+    if len(categorical_cols) > 0:
+        cat_col = categorical_cols[0]
+        plt.figure(figsize=(8, 6))
+        df[cat_col].value_counts().plot(kind='bar', color='lightcoral', edgecolor='black')
+        plt.title(f'Counts of {cat_col}')
+        plt.xlabel(cat_col)
+        plt.ylabel('Counts')
+        plt.tight_layout()
+        plt.savefig(f"{output_folder}/{cat_col}_barplot.png")
+        plt.close()
+    else:
+        print("No categorical columns found in the DataFrame.")
 
 def main():
-
+    global output_folder
+    global df
     # Validate command line argument count
     if len(sys.argv) != 2:
         print("Usage: uv run autolysis.py <input_filename.csv>")
@@ -185,7 +333,7 @@ def main():
 
     # Load a sample of 10 lines (or all lines if the file has fewer than 10 lines) from the file
     try:
-        with open(file=file, mode='r', encoding='utf-8') as f:
+        with open(file=file, mode='r', encoding='ISO-8859-1') as f:
             line_count = int(sum(1 for _ in f))
             if line_count == 0:
                 raise ValueError(f"The file '{file}' is empty.")
@@ -195,21 +343,65 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
     except:
-        print(f"Error: There was an issue reading the file '{file}'.")
+        print(f"Error: There was an issue reading the file '{file}'. Try different encoding format..")
         sys.exit(1)
 
     # Send the sample data to LLM and get metadata
-    metadata = get_metadata(data) 
+    try:
+        metadata = get_metadata(data)
+    except:
+        metadata = None
 
     # Load, clean and perform basic analysis on the CSV
-    df = pd.read_csv(file)
-    summary = clean_and_analyze_data(df)
+    df = pd.read_csv(file, encoding='ISO-8859-1')
+    summary = summarize_data(df)
 
-    #From metadata + summary statistics, get code for 3 best visualizations
+    # From metadata + summary statistics, get code for data cleaning
+    try:
+        code_for_cleaning = get_code_for_cleaning(metadata,summary)
+    except:
+        code_for_cleaning = None
+    
+    # Perform data cleaning with the obtained code
+    if code_for_cleaning:
+        cleaning_status = execute_code(code_for_cleaning['code'])
+        if cleaning_status=='Success':
+            summary = summarize_data(df)  # Updated data summary after data clean up
+        else:
+            print('LLM failed twice in giving code for data cleaning. Continuing with raw data.')
+
+    # From metadata + summary statistics, get code for 3 best visualizations
     visuals = get_visuals(metadata,summary)
 
+    no_of_figs_generated = 0
 
+    for fig in ['fig1','fig2','fig3']:
+        fig_generation_status=execute_code(visuals[fig]['code'])
+        if fig_generation_status == 'Success':
+            no_of_figs_generated+=1
+    
+    if no_of_figs_generated == 0:   # LLM Code failed for all 3 figures
+        print('LLM failed twice in generating figures for analysis. Generating from autolysis.py.')
+        create_graphs(df,output_folder)
 
+    # Resize the generated images to 512 x 512 pixels
+    for imagename in os.listdir(output_folder):
+        if imagename.endswith('.png'):
+            image_path = os.path.join(output_folder, imagename)
+            img = Image.open(image_path)
+            img_resized = img.resize((512, 512))
+            img_resized.save(image_path)
+    
+    # From summary and visualizations, generate README.md
+    visualizations = [f for f in os.listdir(output_folder) if f.endswith('.png')]
+    story = generate_readme(summary, visualizations)['text']
 
+    readme_path = os.path.join(output_folder, "README.md")
+
+    with open(readme_path, "w") as readme_file:
+        readme_file.write(f"# Automated Analysis of {file}\n\n")
+        readme_file.write(story)
+
+    print("Analysis complete. README.md saved successfully.")
 if __name__ == "__main__":
      main()
