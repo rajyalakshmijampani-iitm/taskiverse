@@ -235,5 +235,6 @@ def main():
         readme_file.write(story)
 
     print("Analysis complete. README.md saved successfully.")
-if __name__ == "__main__":
-     main()
+
+
+main()
