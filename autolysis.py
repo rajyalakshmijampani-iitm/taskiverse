@@ -21,6 +21,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from PIL import Image
 import warnings
+import tkinter as tk
 
 # Suppress warnings globally
 warnings.filterwarnings("ignore")
