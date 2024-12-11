@@ -26,6 +26,10 @@ warnings.filterwarnings("ignore")
 #Global variables
 
 AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")                                # Read the token from environment
+if  AIPROXY_TOKEN is None:
+    print("Please set token to proceed")
+    sys.exit(1)
+
 url = "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"      # API Endpoint
 headers = {
             "Content-Type": "application/json",
@@ -90,16 +94,18 @@ def summarize_data(df):
     
     df = df.drop_duplicates()
     df = df.dropna(how='all')
+    missing = df.isnull().mean() * 100
+    unique = df.nunique()
 
     # Numeric data summary
-    numeric_summary = df.describe().transpose() 
-    numeric_missing = df.isnull().mean() * 100
-    numeric_summary['missing%'] = numeric_missing[numeric_summary.index]
+    numeric_summary = df.describe().transpose()
+    numeric_summary['missing%'] = missing[numeric_summary.index]
+    numeric_summary['unique_values'] = unique[numeric_summary.index]
 
     # Categorical data summary
     categorical_summary = df.describe(include='object').transpose()
-    categorical_missing = df.isnull().mean() * 100
-    categorical_summary['missing%'] = categorical_missing[categorical_summary.index]
+    categorical_summary['missing%'] = missing[categorical_summary.index]
+    categorical_summary['unique_values'] = unique[categorical_summary.index]
 
     summary['numeric'] = numeric_summary
     summary['categorical'] = categorical_summary
@@ -247,7 +253,7 @@ def generate_readme(summary, visualizations):
                 }
     response = requests.post(url, headers=headers, json=json_data)
     result = response.json()
-    print(result)
+    print("Total token usage till now: ",result['monthlyCost'])
     return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
 
 def create_output_folder(folder_name):
@@ -317,21 +323,25 @@ def main():
     global output_folder
     global df
     # Validate command line argument count
+    print("Validating input...")
     if len(sys.argv) != 2:
         print("Usage: uv run autolysis.py <input_filename.csv>")
         sys.exit(1)
 
     # Check file existence in current working directory
+    print("Checking for file existence...")
     file = sys.argv[1]
     if not os.path.exists(file):
         print("File not found in the current working directory.")
         sys.exit(1)
 
     # Create a folder with file base name to store results
+    print("Creating output folder...")
     file_base_name = os.path.splitext(os.path.basename(file))[0]
     output_folder = create_output_folder(file_base_name)
 
     # Load a sample of 10 lines (or all lines if the file has fewer than 10 lines) from the file
+    print("Sampling data from the csv...")
     try:
         with open(file=file, mode='r', encoding='ISO-8859-1') as f:
             line_count = int(sum(1 for _ in f))
@@ -347,22 +357,26 @@ def main():
         sys.exit(1)
 
     # Send the sample data to LLM and get metadata
+    print("Getting metadata from LLM...")
     try:
         metadata = get_metadata(data)
     except:
         metadata = None
 
     # Load, clean and perform basic analysis on the CSV
+    print("Summarizing the data...")
     df = pd.read_csv(file, encoding='ISO-8859-1')
     summary = summarize_data(df)
 
     # From metadata + summary statistics, get code for data cleaning
+    print("Getting code for data cleaning from LLM...")
     try:
         code_for_cleaning = get_code_for_cleaning(metadata,summary)
     except:
         code_for_cleaning = None
     
     # Perform data cleaning with the obtained code
+    print("Cleaning the code...")
     if code_for_cleaning:
         cleaning_status = execute_code(code_for_cleaning['code'])
         if cleaning_status=='Success':
@@ -371,10 +385,12 @@ def main():
             print('LLM failed twice in giving code for data cleaning. Continuing with raw data.')
 
     # From metadata + summary statistics, get code for 3 best visualizations
+    print("Getting code for visualizations...")
     visuals = get_visuals(metadata,summary)
 
     no_of_figs_generated = 0
 
+    print("Creating the visuals....")
     for fig in ['fig1','fig2','fig3']:
         fig_generation_status=execute_code(visuals[fig]['code'])
         if fig_generation_status == 'Success':
@@ -384,6 +400,7 @@ def main():
         print('LLM failed twice in generating figures for analysis. Generating from autolysis.py.')
         create_graphs(df,output_folder)
 
+    print("Resizing the images...")
     # Resize the generated images to 512 x 512 pixels
     for imagename in os.listdir(output_folder):
         if imagename.endswith('.png'):
@@ -392,6 +409,7 @@ def main():
             img_resized = img.resize((512, 512))
             img_resized.save(image_path)
     
+    print("Generating README...")
     # From summary and visualizations, generate README.md
     visualizations = [f for f in os.listdir(output_folder) if f.endswith('.png')]
     story = generate_readme(summary, visualizations)['text']
