@@ -142,6 +142,7 @@ def create_graphs(df,good_columns):
     pair_cols=(good_columns["pairplot1"],good_columns["pairplot2"])
 
     # Create histogram
+    plt.figure(figsize=(8, 6))
     df[hist_col].dropna().hist(bins=30, color='skyblue', edgecolor='black')
     plt.title(f'Distribution of {hist_col}')
     plt.xlabel(hist_col)
@@ -159,6 +160,8 @@ def create_graphs(df,good_columns):
     else:
         top_values = value_counts
     # Plot the optimized bar chart
+    plt.figure(figsize=(8, 6))
+    top_values.plot(kind='bar', color='skyblue', edgecolor='black')
     plt.title(f'Top {top_n} Categories of {bar_col}')
     plt.xlabel(bar_col)
     plt.ylabel('Counts')
@@ -167,6 +170,7 @@ def create_graphs(df,good_columns):
     plt.close()
 
     # Create pairplot
+    plt.figure(figsize=(8, 6))
     plt.scatter(df[pair_cols[0]], df[pair_cols[1]], color='skyblue', edgecolor='black', alpha=0.7)
     plt.title(f'Scatterplot of {pair_cols[0]} vs {pair_cols[1]}')
     plt.xlabel(pair_cols[0])
