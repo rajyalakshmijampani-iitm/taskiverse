@@ -25,6 +25,7 @@ import warnings
 
 # Suppress warnings globally
 warnings.filterwarnings("ignore")
+matplotlib.use('Agg')
 
 #Global variables
 
