@@ -42,28 +42,57 @@ class Config:
     MODEL = "gpt-4o-mini"
 
 def summarize_data(df):
-    # Generate a summary of the dataset, including numeric and categorical data.
+    # Generate a summary of the dataset, including basic statistics, advanced metrics, and exploratory analysis insights.
     summary={}
     
     # Basic data cleaning
     df = df.drop_duplicates()
-    df = df.dropna(how='all')
-
-    missing = df.isnull().mean() * 100
-    unique = df.nunique()
+    df = df.dropna(how='all')  # Remove rows with all null values
 
     # Numeric data summary
-    numeric_summary = df.describe().transpose()
-    numeric_summary['missing%'] = missing[numeric_summary.index]
-    numeric_summary['unique_values'] = unique[numeric_summary.index]
+    numeric_cols = df.select_dtypes(exclude='object')
+    if not numeric_cols.empty:
+        numeric_summary = numeric_cols.describe().transpose()
+        numeric_summary['missing%'] = numeric_cols.isnull().mean() * 100
+        numeric_summary['unique_values'] = numeric_cols.nunique()
+        numeric_summary['skewness'] = numeric_cols.skew()
+        numeric_summary['kurtosis'] = numeric_cols.kurtosis()
+        
+        # Detect potential outliers using the IQR rule
+        q1 = numeric_cols.quantile(0.25)
+        q3 = numeric_cols.quantile(0.75)
+        iqr = q3 - q1
+        outlier_flags = ((numeric_cols < (q1 - 1.5 * iqr)) | (numeric_cols > (q3 + 1.5 * iqr))).sum()
+        numeric_summary['outliers'] = outlier_flags
+
+        summary['numeric'] = numeric_summary
 
     # Categorical data summary
-    categorical_summary = df.describe(include='object').transpose()
-    categorical_summary['missing%'] = missing[categorical_summary.index]
-    categorical_summary['unique_values'] = unique[categorical_summary.index]
+    categorical_cols = df.select_dtypes(include='object')
+    if not categorical_cols.empty:
+        categorical_summary = categorical_cols.describe().transpose()
+        categorical_summary['missing%'] = categorical_cols.isnull().mean() * 100
+        categorical_summary['unique_values'] = categorical_cols.nunique()
 
-    summary['numeric'] = numeric_summary
-    summary['categorical'] = categorical_summary
+        # Detect categorical imbalance
+        imbalance_flags = categorical_cols.apply(lambda col: col.value_counts(normalize=True).iloc[0] > 0.8)
+        categorical_summary['imbalance'] = imbalance_flags
+
+        summary['categorical'] = categorical_summary
+
+    # Correlation matrix for numeric columns
+    if numeric_cols.shape[1] > 1:
+        correlation_matrix = numeric_cols.corr()
+        high_corr_cols = correlation_matrix.columns[correlation_matrix.abs().gt(0.9).any()]
+        correlation_matrix = correlation_matrix[high_corr_cols].loc[high_corr_cols]
+        summary['correlation'] = correlation_matrix
+
+    # Features with high missing values
+    high_missing = df.isnull().mean() * 100
+    high_missing_features = high_missing[high_missing > 50].sort_values(ascending=False)
+    if not high_missing_features.empty:
+        summary['high_missing'] = high_missing_features
+
     return summary
 
 def get_columns_for_analysis(summary):
@@ -82,8 +111,8 @@ def get_columns_for_analysis(summary):
             "required":["histogram","barchart","pairplot1","pairplot2"]
         }
     }]
-    prompt = f'''Given the dataset summary, suggest one good column to be chosen for histogram,
-                one good column to be chosen for barchart, two good columns to be chosen for pairplot.
+    prompt = f'''Given the dataset summary, suggest a numeric column for histogram, 
+                 a categorical column for barchart, and two correlated numeric columns for pairplot.
                 \nSummary:{summary}'''
     
     json_data = {"model": Config.MODEL,
@@ -110,9 +139,9 @@ def generate_readme(summary, visualizations):
         }
     }]
     prompt = f'''Given the dataset summary: {summary} and visualizations: {visualizations}, 
-                write a README.md containing dataset's purpose, key findings, insights, and recommendations. 
-                Use placeholders to indicate where the visualization would be integrated.
-                Explain how each visualization supports the narrative.'''
+                write a README.md containing dataset's purpose, key findings,
+                deeper insights referencing relevant visualizations, and actionable recommendations. 
+                Use placeholders for integrating visualizations.'''
     
     json_data = {"model": Config.MODEL,
                 "functions": functions,
@@ -138,7 +167,7 @@ def create_graphs(df,good_columns,output_folder):
 
     # Create histogram
     plt.figure(figsize=(8, 6))
-    df[hist_col].dropna().hist(bins=30, color='skyblue', edgecolor='black')
+    df[hist_col].dropna().hist(bins=30, color='skyblue', edgecolor='black', label=f'Frequency of {hist_col}')
     plt.title(f'Distribution of {hist_col}')
     plt.xlabel(hist_col)
     plt.ylabel('Frequency')
@@ -152,20 +181,22 @@ def create_graphs(df,good_columns,output_folder):
     top_values = value_counts[:10] if len(value_counts) > 10 else value_counts
 
     plt.figure(figsize=(8, 6))
-    top_values.plot(kind='bar', color='skyblue', edgecolor='black')
+    top_values.plot(kind='bar', color='skyblue', edgecolor='black',label=f'Counts of {bar_col}')
     plt.title(f'Top Categories of {bar_col}')
     plt.xlabel(bar_col)
     plt.ylabel('Counts')
+    plt.legend(title="Legend", loc="upper right")
     plt.tight_layout()
     plt.savefig(f"{output_folder}/{bar_col}_barplot.png")
     plt.close()
 
     # Create scatterplot
     plt.figure(figsize=(8, 6))
-    plt.scatter(df[pair_cols[0]], df[pair_cols[1]], color='skyblue', edgecolor='black', alpha=0.7)
+    plt.scatter(df[pair_cols[0]], df[pair_cols[1]], color='skyblue', edgecolor='black', alpha=0.7, label=f'{pair_cols[0]} vs {pair_cols[1]}')
     plt.title(f'Scatterplot of {pair_cols[0]} vs {pair_cols[1]}')
     plt.xlabel(pair_cols[0])
     plt.ylabel(pair_cols[1])
+    plt.legend(title="Legend", loc="upper right")
     plt.tight_layout()
     plt.savefig(f"{output_folder}/{pair_cols[0]}_vs_{pair_cols[1]}_scatterplot.png")
     plt.close()
