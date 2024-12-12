@@ -6,7 +6,8 @@
 #     "matplotlib",
 #     "seaborn",
 #     "requests",
-#     "Pillow"
+#     "Pillow",
+#     "tk"
 # ]
 # ///
 
