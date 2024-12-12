@@ -122,6 +122,7 @@ def get_columns_for_analysis(summary):
                 }
     response = requests.post(Config.URL, headers=Config.HEADERS, json=json_data)
     result = response.json()
+    print("Total token usage till now: ", result.get('monthlyCost', 'N/A'))
     return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
 
 
