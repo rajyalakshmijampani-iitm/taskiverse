@@ -20,6 +20,7 @@ import requests
 import matplotlib
 import seaborn as sns
 import matplotlib.pyplot as plt
+import base64
 from PIL import Image
 import warnings
 
@@ -122,12 +123,26 @@ def get_columns_for_analysis(summary):
                 }
     response = requests.post(Config.URL, headers=Config.HEADERS, json=json_data)
     result = response.json()
-    print("Total token usage till now: ", result.get('monthlyCost', 'N/A'))
+    print("Token usage till column suggestion: ", result.get('monthlyCost', 'N/A'))
     return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
+
+def encode_image(image_path):
+  # Function to encode the image
+  with open(image_path, "rb") as image_file:
+    return base64.b64encode(image_file.read()).decode('utf-8')
 
 
 def generate_readme(summary, visualizations):
     # Ask LLM to generate README.md content based on dataset summary and visualizations.
+
+    # Encode images to base64
+    encoded_images = []
+    for image_path in visualizations:
+        base64_image = encode_image(image_path)
+        encoded_images.append(f"data:image/jpeg;base64,{base64_image}")
+
+    image_filenames = [os.path.basename(f) for f in visualizations]
+
     functions  = [{
         "name": "generate_readme",
         "description": "Write a story describing the dataset, analysis, insights, and implications.",
@@ -139,19 +154,20 @@ def generate_readme(summary, visualizations):
             "required":["text"]
         }
     }]
-    prompt = f'''Given the dataset summary: {summary} and visualizations: {visualizations}, 
+    prompt = f'''Given the dataset summary: {summary} and visualizations, 
                 write a README.md containing dataset's purpose, key findings,
                 deeper insights referencing relevant visualizations, and actionable recommendations. 
-                Use placeholders for integrating visualizations.'''
+                Use placeholders {image_filenames} for images.'''
     
     json_data = {"model": Config.MODEL,
                 "functions": functions,
                 "function_call": {"name": "generate_readme"},
-                "messages":[{"role": "user", "content": prompt}]
+                "messages": [{"role": "user", "content": prompt}] 
+                          + [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": image}}]} for image in encoded_images]
                 }
     response = requests.post(Config.URL, headers=Config.HEADERS, json=json_data)
     result = response.json()
-    print("Total token usage till now: ", result.get('monthlyCost', 'N/A'))
+    print("Total token usage by the end of analysis: ", result.get('monthlyCost', 'N/A'))
     return json.loads(result["choices"][0]["message"]["function_call"]["arguments"])
 
 def create_output_folder(folder_name):
@@ -174,7 +190,7 @@ def create_graphs(df,good_columns,output_folder):
     plt.ylabel('Frequency')
     plt.legend(title="Legend", loc="upper right")
     plt.tight_layout()
-    plt.savefig(f"{output_folder}/{hist_col}_distribution.png")
+    plt.savefig(f"{output_folder}/{hist_col.replace(' ', '_')}_distribution.png")
     plt.close()
 
     # Create barchart
@@ -188,7 +204,7 @@ def create_graphs(df,good_columns,output_folder):
     plt.ylabel('Counts')
     plt.legend(title="Legend", loc="upper right")
     plt.tight_layout()
-    plt.savefig(f"{output_folder}/{bar_col}_barplot.png")
+    plt.savefig(f"{output_folder}/{bar_col.replace(' ', '_')}_barplot.png")
     plt.close()
 
     # Create scatterplot
@@ -199,7 +215,7 @@ def create_graphs(df,good_columns,output_folder):
     plt.ylabel(pair_cols[1])
     plt.legend(title="Legend", loc="upper right")
     plt.tight_layout()
-    plt.savefig(f"{output_folder}/{pair_cols[0]}_vs_{pair_cols[1]}_scatterplot.png")
+    plt.savefig(f"{output_folder}/{pair_cols[0].replace(' ', '_')}_vs_{pair_cols[1].replace(' ', '_')}_scatterplot.png")
     plt.close()
 
 
@@ -238,7 +254,7 @@ def main():
             img_resized.save(image_path)
     
     # Generate README.md
-    visualizations = [f for f in os.listdir(output_folder) if f.endswith('.png')]
+    visualizations = [os.path.join(output_folder, f) for f in os.listdir(output_folder) if f.endswith('.png')]
     story = generate_readme(summary, visualizations)['text']
 
     with open(os.path.join(output_folder, "README.md"), "w") as readme_file:
